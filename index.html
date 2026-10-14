@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Feynman Diagram Vertex Interaction Builder</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  #canvas { cursor: crosshair; display: block; }
+  .tool-btn { padding: 6px 12px; border-radius: 6px; border: 2px solid #374151; font-size: 0.8rem; cursor: pointer; transition: all 0.15s; }
+  .tool-btn:hover { border-color: #6b7280; }
+  .tool-btn.active { border-color: #3b82f6; background: #1e3a5f; }
+  .line-btn { display: flex; align-items: center; gap-6px; padding: 5px 10px; border-radius: 6px; border: 2px solid #374151; cursor: pointer; font-size: 0.8rem; transition: all 0.15s; }
+  .line-btn.active { border-color: #3b82f6; background: #1e3a5f; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col items-center py-6 px-4">
+<h1 class="text-3xl font-bold mb-1 text-purple-400">Feynman Diagram Builder</h1>
+<p class="text-gray-400 mb-4 text-sm text-center">Click to add vertices, click two vertices to connect them. Right-click to delete.</p>
+
+<div class="flex gap-3 mb-4 flex-wrap justify-center items-center">
+  <!-- Mode -->
+  <div class="flex gap-2">
+    <button id="btnVertex" class="tool-btn active" onclick="setMode('vertex')">+ Vertex</button>
+    <button id="btnConnect" class="tool-btn" onclick="setMode('connect')">Connect</button>
+    <button id="btnDelete" class="tool-btn" onclick="setMode('delete')">Delete</button>
+  </div>
+
+  <div class="w-px h-8 bg-gray-700"></div>
+
+  <!-- Line types -->
+  <div class="flex gap-2 flex-wrap justify-center">
+    <button id="lt_fermion" class="line-btn active" onclick="setLineType('fermion')">
+      <svg width="40" height="12"><line x1="0" y1="6" x2="30" y2="6" stroke="#60a5fa" stroke-width="2"/><polygon points="30,6 22,2 22,10" fill="#60a5fa"/></svg>
+      Fermion
+    </button>
+    <button id="lt_photon" class="line-btn" onclick="setLineType('photon')">
+      <svg width="40" height="12"><path d="M0,6 Q5,0 10,6 Q15,12 20,6 Q25,0 30,6 Q35,12 40,6" fill="none" stroke="#fbbf24" stroke-width="2"/></svg>
+      Photon
+    </button>
+    <button id="lt_gluon" class="line-btn" onclick="setLineType('gluon')">
+      <svg width="40" height="12"><path d="M0,6 C5,0 5,12 10,6 C15,0 15,12 20,6 C25,0 25,12 30,6 C35,0 35,12 40,6" fill="none" stroke="#34d399" stroke-width="2"/></svg>
+      Gluon
+    </button>
+    <button id="lt_scalar" class="line-btn" onclick="setLineType('scalar')">
+      <svg width="40" height="12"><line x1="0" y1="6" x2="40" y2="6" stroke="#f87171" stroke-width="2" stroke-dasharray="4,3"/></svg>
+      Scalar
+    </button>
+  </div>
+
+  <div class="w-px h-8 bg-gray-700"></div>
+
+  <!-- Presets -->
+  <div class="flex gap-2">
+    <button onclick="loadPreset('qed')" class="tool-btn">QED Vertex</button>
+    <button onclick="loadPreset('compton')" class="tool-btn">Compton</button>
+    <button onclick="clearAll()" class="tool-btn text-red-400">Clear</button>
+    <button onclick="exportSVG()" class="tool-btn text-green-400">Export SVG</button>
+  </div>
+</div>
+
+<div class="border border-gray-700 rounded-xl overflow-hidden shadow-2xl">
+  <svg id="canvas" width="800" height="520" style="background:#0a0a14;"></svg>
+</div>
+
+<div id="status" class="mt-3 text-sm text-gray-500">Mode: Add Vertex | Line: Fermion</div>
+
+<script>
+const svg = document.getElementById('canvas');
+let mode = 'vertex';
+let lineType = 'fermion';
+let vertices = [];
+let edges = [];
+let selectedVertex = null;
+let nextId = 0;
+const VR = 8; // vertex radius
+
+const lineColors = { fermion:'#60a5fa', photon:'#fbbf24', gluon:'#34d399', scalar:'#f87171' };
+
+function setMode(m) {
+  mode = m;
+  selectedVertex = null;
+  clearSelection();
+  ['vertex','connect','delete'].forEach(x => document.getElementById('btn'+x.charAt(0).toUpperCase()+x.slice(1)).classList.toggle('active', x===m));
+  updateStatus();
+}
+
+function setLineType(lt) {
+  lineType = lt;
+  ['fermion','photon','gluon','scalar'].forEach(x => document.getElementById('lt_'+x).classList.toggle('active', x===lt));
+  updateStatus();
+}
+
+function updateStatus() {
+  document.getElementById('status').textContent = `Mode: ${mode.charAt(0).toUpperCase()+mode.slice(1)} | Line: ${lineType.charAt(0).toUpperCase()+lineType.slice(1)}`;
+}
+
+function clearSelection() {
+  svg.querySelectorAll('.vertex-circle').forEach(c => c.setAttribute('stroke','#6b7280'));
+}
+
+function getMousePos(e) {
+  const rect = svg.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function hitVertex(x, y) {
+  for (const v of vertices) {
+    const dx = v.x - x, dy = v.y - y;
+    if (Math.sqrt(dx*dx+dy*dy) <= VR + 4) return v;
+  }
+  return null;
+}
+
+function hitEdge(x, y) {
+  for (const e of edges) {
+    const v1 = vertices.find(v=>v.id===e.from), v2 = vertices.find(v=>v.id===e.to);
+    if (!v1||!v2) continue;
+    const dx=v2.x-v1.x, dy=v2.y-v1.y, len=Math.sqrt(dx*dx+dy*dy);
+    if (len<1) continue;
+    const t=((x-v1.x)*dx+(y-v1.y)*dy)/(len*len);
+    if (t<0||t>1) continue;
+    const px=v1.x+t*dx-x, py=v1.y+t*dy-y;
+    if (Math.sqrt(px*px+py*py)<8) return e;
+  }
+  return null;
+}
+
+svg.addEventListener('click', (e) => {
+  e.preventDefault();
+  const pos = getMousePos(e);
+  const hit = hitVertex(pos.x, pos.y);
+
+  if (mode === 'vertex') {
+    if (!hit) addVertex(pos.x, pos.y);
+  } else if (mode === 'connect') {
+    if (hit) {
+      if (!selectedVertex) {
+        selectedVertex = hit;
+        svg.querySelector(`#vc_${hit.id}`).setAttribute('stroke','#3b82f6');
+      } else if (selectedVertex.id !== hit.id) {
+        // Check no duplicate
+        const exists = edges.find(ex => (ex.from===selectedVertex.id&&ex.to===hit.id)||(ex.from===hit.id&&ex.to===selectedVertex.id));
+        if (!exists) addEdge(selectedVertex.id, hit.id, lineType);
+        clearSelection();
+        selectedVertex = null;
+      }
+    } else {
+      clearSelection(); selectedVertex = null;
+    }
+  } else if (mode === 'delete') {
+    if (hit) {
+      removeVertex(hit.id);
+    } else {
+      const eh = hitEdge(pos.x, pos.y);
+      if (eh) removeEdge(eh.id);
+    }
+  }
+});
+
+svg.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const pos = getMousePos(e);
+  const hit = hitVertex(pos.x, pos.y);
+  if (hit) { removeVertex(hit.id); return; }
+  const eh = hitEdge(pos.x, pos.y);
+  if (eh) removeEdge(eh.id);
+});
+
+function addVertex(x, y) {
+  const id = nextId++;
+  vertices.push({ id, x, y });
+  renderVertex({ id, x, y });
+}
+
+function removeVertex(id) {
+  edges = edges.filter(e => e.from!==id && e.to!==id);
+  vertices = vertices.filter(v => v.id!==id);
+  svg.querySelector('#vg_'+id)?.remove();
+  reRenderEdges();
+}
+
+function addEdge(from, to, type) {
+  const id = nextId++;
+  edges.push({ id, from, to, type });
+  renderEdge({ id, from, to, type });
+}
+
+function removeEdge(id) {
+  edges = edges.filter(e => e.id!==id);
+  svg.querySelector('#eg_'+id)?.remove();
+}
+
+function renderVertex(v) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.id = 'vg_'+v.id;
+  const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+  c.setAttribute('cx',v.x); c.setAttribute('cy',v.y); c.setAttribute('r',VR);
+  c.setAttribute('fill','#1e293b'); c.setAttribute('stroke','#6b7280'); c.setAttribute('stroke-width','2');
+  c.id = 'vc_'+v.id; c.classList.add('vertex-circle');
+  g.appendChild(c);
+  svg.appendChild(g);
+}
+
+function renderEdge(e) {
+  const v1=vertices.find(v=>v.id===e.from), v2=vertices.find(v=>v.id===e.to);
+  if (!v1||!v2) return;
+  const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.id = 'eg_'+e.id;
+
+  const path = buildPath(v1, v2, e.type);
+  path.setAttribute('stroke', lineColors[e.type]);
+  path.setAttribute('stroke-width','2.5');
+  path.setAttribute('fill','none');
+  if (e.type==='scalar') path.setAttribute('stroke-dasharray','6,4');
+  g.appendChild(path);
+
+  if (e.type==='fermion') {
+    // Arrow head at midpoint toward v2
+    const mx=(v1.x+v2.x)/2, my=(v1.y+v2.y)/2;
+    const dx=v2.x-v1.x, dy=v2.y-v1.y, len=Math.sqrt(dx*dx+dy*dy)||1;
+    const ux=dx/len, uy=dy/len;
+    const arr = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    const ax=mx+ux*6, ay=my+uy*6;
+    const px=-uy*5, py=ux*5;
+    arr.setAttribute('points',`${ax},${ay} ${ax-ux*10+px},${ay-uy*10+py} ${ax-ux*10-px},${ay-uy*10-py}`);
+    arr.setAttribute('fill',lineColors.fermion);
+    g.appendChild(arr);
+  }
+
+  // Insert before vertices
+  const firstV = svg.querySelector('[id^="vg_"]');
+  if (firstV) svg.insertBefore(g, firstV); else svg.appendChild(g);
+}
+
+function buildPath(v1, v2, type) {
+  const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+  const dx=v2.x-v1.x, dy=v2.y-v1.y, len=Math.sqrt(dx*dx+dy*dy)||1;
+
+  if (type==='fermion'||type==='scalar') {
+    path.setAttribute('d',`M${v1.x},${v1.y} L${v2.x},${v2.y}`);
+  } else if (type==='photon') {
+    // Wavy line
+    const ux=dx/len, uy=dy/len, px=-uy, py=ux;
+    const waves = Math.max(3, Math.round(len/16));
+    let d=`M${v1.x},${v1.y}`;
+    for (let i=0;i<waves;i++) {
+      const t1=(i+0.25)/waves, t2=(i+0.75)/waves, te=(i+1)/waves;
+      const s=12;
+      d+=` Q${v1.x+t1*dx+px*s},${v1.y+t1*dy+py*s} ${v1.x+(t1+t2)/2*dx},${v1.y+(t1+t2)/2*dy}`;
+      d+=` Q${v1.x+t2*dx-px*s},${v1.y+t2*dy-py*s} ${v1.x+te*dx},${v1.y+te*dy}`;
+    }
+    path.setAttribute('d',d);
+  } else if (type==='gluon') {
+    // Spring/helix
+    const ux=dx/len, uy=dy/len, px=-uy, py=ux;
+    const loops = Math.max(3, Math.round(len/14));
+    let d=`M${v1.x},${v1.y}`;
+    for (let i=0;i<loops;i++) {
+      const t0=i/loops, t1=(i+0.5)/loops, t2=(i+1)/loops;
+      const r=9;
+      d+=` C${v1.x+t0*dx+px*r*2},${v1.y+t0*dy+py*r*2}`;
+      d+=` ${v1.x+t1*dx+px*r*2},${v1.y+t1*dy+py*r*2}`;
+      d+=` ${v1.x+t1*dx},${v1.y+t1*dy}`;
+      d+=` C${v1.x+t1*dx-px*r*2},${v1.y+t1*dy-py*r*2}`;
+      d+=` ${v1.x+t2*dx-px*r*2},${v1.y+t2*dy-py*r*2}`;
+      d+=` ${v1.x+t2*dx},${v1.y+t2*dy}`;
+    }
+    path.setAttribute('d',d);
+  }
+  return path;
+}
+
+function reRenderEdges() {
+  edges.forEach(e => { svg.querySelector('#eg_'+e.id)?.remove(); renderEdge(e); });
+}
+
+function clearAll() {
+  svg.innerHTML=''; vertices=[]; edges=[]; selectedVertex=null; nextId=0;
+}
+
+function loadPreset(name) {
+  clearAll();
+  if (name==='qed') {
+    // Basic QED vertex: electron in, electron out, photon
+    addVertex(150,260);  // electron in (id 0)
+    addVertex(400,260);  // vertex (id 1)
+    addVertex(650,260);  // electron out (id 2)
+    addVertex(400,80);   // photon (id 3)
+    addEdge(0,1,'fermion');
+    addEdge(1,2,'fermion');
+    addEdge(1,3,'photon');
+    // Labels
+    addLabel(100,280,'e⁻');
+    addLabel(660,280,'e⁻');
+    addLabel(420,65,'γ');
+  } else if (name==='compton') {
+    // Compton scattering: e + γ -> e + γ via two QED vertices
+    addVertex(150,200); addVertex(150,340);
+    addVertex(400,200); addVertex(400,340);
+    addVertex(650,200); addVertex(650,340);
+    addEdge(0,2,'fermion'); addEdge(2,4,'fermion');
+    addEdge(2,3,'photon');
+    addEdge(1,3,'photon');
+    addEdge(3,5,'photon');
+    addLabel(80,200,'e⁻'); addLabel(80,345,'γ');
+    addLabel(680,200,'e⁻'); addLabel(680,345,'γ');
+  }
+}
+
+function addLabel(x, y, text) {
+  const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+  t.setAttribute('x',x); t.setAttribute('y',y);
+  t.setAttribute('fill','#9ca3af'); t.setAttribute('font-size','16');
+  t.setAttribute('font-family','serif'); t.setAttribute('text-anchor','middle');
+  t.textContent=text;
+  svg.appendChild(t);
+}
+
+function exportSVG() {
+  const clone = svg.cloneNode(true);
+  clone.setAttribute('xmlns','http://www.w3.org/2000/svg');
+  // Add background
+  const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  bg.setAttribute('width','800'); bg.setAttribute('height','520'); bg.setAttribute('fill','#0a0a14');
+  clone.insertBefore(bg, clone.firstChild);
+  const blob = new Blob([clone.outerHTML], {type:'image/svg+xml'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'feynman-diagram.svg';
+  a.click();
+}
+
+// Initial hint
+addLabel(400, 270, 'Click to add vertices');
+</script>
+</body>
+</html>
